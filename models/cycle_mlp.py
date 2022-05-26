@@ -1,9 +1,11 @@
+from matplotlib.pyplot import xkcd
 import torch
 import torch.nn as nn
 import torch.functional as F
 
 from typing import Tuple
 from math import floor
+from einops import rearrange
 
 
 def pair(t):
@@ -38,14 +40,18 @@ class MLP(nn.Module):
         """Forward function for MLP
 
         Args:
-            x (torch.Tensor): Input tensor. Shape : b, h, w, c
+            x (torch.Tensor): Input tensor. Shape : b, c_in, h, w
 
         Returns:
-            torch.Tensor: Output tensor. Shape : b, h, w, c_out
+            torch.Tensor: Output tensor. Shape : b, c_out, h, w
         """
+        x = rearrange(x, "b c h w -> b h w c")
         x = self.fc_1(x)
+        x = rearrange(x, "b h w c -> b c h w")
         x = self.act(x)
+        x = rearrange(x, "b c h w -> b h w c")
         x = self.fc_2(x)
+        x = rearrange(x, "b h w c -> b c h w")
         x = self.dropout(x)
         return x
 
@@ -78,10 +84,10 @@ class CycleFC(nn.Module):
         """Forward function for CycleFC
 
         Args:
-            x (torch.Tensor): Input Tensor. Shape : b, h, w, c_in
+            x (torch.Tensor): Input Tensor. Shape : b,  c_in, h, w
 
         Returns:
-            torch.Tensor: Output Tensor. Shape : b, h, w, c_out
+            torch.Tensor: Output Tensor. Shape : b, c_out, h, w
         """
         b, c_in, h, w = x.shape
         output = torch.zeros(size=(b, self.out_channels, h, w))
@@ -140,9 +146,173 @@ class CycleFC(nn.Module):
         return sum
 
 
+class Spatial_Proj(nn.Module):
+    def __init__(self, in_channels: int, batch_size: int, out_channels: int = 0):
+        """Initializes Spatial Proj block.
+
+        Args:
+            in_channels (int): Number of input channels
+            out_channels (int, optional): Number of output channels. Defaults to 0.
+            batch_size (int): Batch size.
+        """
+        super(Spatial_Proj, self).__init__()
+        out_channels = out_channels or in_channels
+        self.fc_1 = nn.Linear(out_channels, out_channels)
+        self.cycle1 = CycleFC(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            sh=1,
+            sw=7,
+            batch_size=batch_size,
+        )
+        self.cycle2 = CycleFC(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            sh=1,
+            sw=1,
+            batch_size=batch_size,
+        )
+        self.cycle3 = CycleFC(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            sh=7,
+            sw=1,
+            batch_size=batch_size,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward function for Spatial projection.
+
+        Args:
+            x (torch.Tensor): Input tensor. Shape: b,c,h,w
+
+        Returns:
+            torch.Tensor: Output tensor. Shape: b, c_out,h,w
+        """
+        x1 = self.cycle1(x)
+        x2 = self.cycle2(x)
+        x3 = self.cycle3(x)
+        sum_x = x1 + x2 + x3
+        sum_x = rearrange(sum_x, "b c h w -> b h w c")
+        sum_x = self.fc_1(sum_x)
+        sum_x = rearrange(sum_x, "b h w c -> b c h w")
+        return sum_x
+
+
+class MLP_Block(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        hidden_channels: int = 0,
+        dropout: float = 0.0,
+    ):
+        """Initializes MLP block of cycleMLP
+
+        Args:
+            in_channels (int): Number of input channels
+            out_channels (int): Number of output channels
+            hidden_channels (int, optional): Number of hidden channels. Defaults to 0.
+            dropout (float, optional): Dropout rate. Defaults to 0.0.
+        """
+        super(MLP_Block, self).__init__()
+
+        self.norm = nn.LayerNorm(in_channels)
+        self.mlp = MLP(
+            input_features=in_channels,
+            hidden_features=hidden_channels,
+            output_features=out_channels,
+            drop=dropout,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward function for MLP block
+
+        Args:
+            x (torch.Tensor): Input tensor of shape b, c_in, h, w
+
+        Returns:
+            torch.Tensor: Output tensor of shape b, c_out, h, w
+        """
+        input_x = x
+        x = rearrange(x, "b c h w -> b h w c")
+        x = self.norm(x)
+        x = rearrange(x, "b h w c -> b c h w")
+        x = self.mlp(x)
+        x = x + input_x
+        return x
+
+
+class Cycle_Block(nn.Module):
+    def __init__(self, in_channels: int, batch_size: int, out_channels: int = 0):
+        """Initializes Cycle Block
+
+        Args:
+            in_channels (int): _description_
+            batch_size (int): _description_
+            out_channels (int, optional): _description_. Defaults to 0.
+        """
+        super(Cycle_Block, self).__init__()
+        self.spatial_proj = Spatial_Proj(
+            in_channels=in_channels, out_channels=out_channels, batch_size=batch_size
+        )
+        self.norm = nn.LayerNorm(in_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward function for cycle block
+
+        Args:
+            x (torch.Tensor): Input tensor with shape b,c_in,h,w.
+
+        Returns:
+            torch.Tensor: Output tensor with shape b,c_out,h,w.
+        """
+        input_x = x
+        x = rearrange(x, "b c h w -> b h w c")
+        x = self.norm(x)
+        x = rearrange(x, "b h w c -> b c h w")
+        x = self.spatial_proj(x)
+        x = x + input_x
+        return x
+
+
+class CycleMLP_Block(nn.Module):
+    def __init__(self, in_channels: int, batch_size: int):
+        """Initializes cycle mlp block
+
+        Args:
+            in_channels (int): Input channel.
+            batch_size (int): Batch size.
+
+        """
+        super(CycleMLP_Block, self).__init__()
+        self.cycle_block = Cycle_Block(
+            in_channels=in_channels, batch_size=batch_size, out_channels=in_channels
+        )
+        self.mlp_block = MLP_Block(
+            in_channels=in_channels,
+            hidden_channels=4 * in_channels,
+            out_channels=in_channels,
+            dropout=0,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward function for CycleMLP_Block
+
+        Args:
+            x (torch.Tensor): Input tensor. shape: b,c,h,w
+
+        Returns:
+            torch.Tensor: Output tensor. shape: b,c,h,w
+        """
+        x = self.cycle_block(x)
+        x = self.mlp_block(x)
+        return x
+
+
 if __name__ == "__main__":
-    cfc = CycleFC(in_channels=3, out_channels=12, sh=7, sw=1, batch_size=4)
+    cfc = CycleMLP_Block(in_channels=3, batch_size=4)
     test_input = torch.randn(size=(4, 3, 64, 64))
     output = cfc(test_input)
     # print(output)
-    # print(output.shape)
+    print(output.shape)
