@@ -1,0 +1,52 @@
+######################
+# sample config file
+######################
+
+data_dir: ./data/
+
+
+exp:
+    wandb: True
+    wandb_api_key:
+    proj_name: torch-cycle-mlp
+    exp_dir: ./runs
+    exp_name: cycle-mlp-0.1.0
+    device: auto
+    log_freq: 20  # steps
+    log_to_file: False
+    log_to_stdout: True
+    val_freq: 1   # epochs
+    n_workers: 1
+    pin_memory: True
+    cache: 2      # 0 -> no cache | 1 -> cache wavs | 2 -> cache specs; stops wav augments
+    
+
+hparams:
+    restore_ckpt:
+    seed: 0
+    batch_size: 256
+    start_epoch: 0
+    n_epochs: 140
+    l_smooth: 0.1
+
+    
+    model:
+        stride_list: [4, 2]
+        channel_list: [96, 192] 
+        layer_list: [2, 2]
+        in_channels: [3, 96]
+        num_class: 10,
+
+    optimizer:
+        opt_type: adamw
+        opt_kwargs:
+          lr: 0.001
+          weight_decay: 0.05
+    
+    scheduler:
+        n_warmup: 10
+        max_epochs: 140
+        scheduler_type: cosine_annealing
+
+    augment: False
+       
