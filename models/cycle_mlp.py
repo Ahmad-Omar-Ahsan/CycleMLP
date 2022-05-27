@@ -1,3 +1,4 @@
+
 from matplotlib.pyplot import xkcd
 import torch
 import torch.nn as nn
@@ -310,9 +311,133 @@ class CycleMLP_Block(nn.Module):
         return x
 
 
+class OverlapPatchEmbed(nn.Module):
+    """ Image to Patch Embedding
+    """
+
+    def __init__(self, img_size=224, patch_size=7, stride=4, in_chans=3, embed_dim=768):
+        """ Initialize overlap patch embedding
+
+        Args:
+            img_size (int, optional): Image size. Defaults to 224.
+            patch_size (int, optional): Patch size. Defaults to 7.
+            stride (int, optional): Stride. Defaults to 4.
+            in_chans (int, optional): Input Channels. Defaults to 3.
+            embed_dim (int, optional): Embed dim. Defaults to 768.
+        """
+        super().__init__()
+        img_size = pair(img_size)
+        patch_size = pair(patch_size)
+        
+        assert max(patch_size) > stride, "Set larger patch_size than stride"
+        
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.H, self.W = img_size[0] // stride, img_size[1] // stride
+        self.num_patches = self.H * self.W
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=stride,
+                              padding=(patch_size[0] // 2, patch_size[1] // 2))
+        self.norm = nn.LayerNorm(embed_dim)
+
+        
+
+    def forward(self, x):
+        x = self.proj(x)
+        _, _, H, W = x.shape
+        x = rearrange(x, 'b c h w -> b h w c')
+        x = self.norm(x)
+        x = rearrange(x, 'b h w c -> b c h w')
+        return x
+        
+
+class Stage(nn.Module):
+    def __init__(self,
+                 in_channels: int,
+                 stride: int,
+                 expansion: int,
+                 layers: int,
+                 output_channel: int,
+                 batch_size :  int):
+        """ Initialize a stage in CycleMLP
+
+        Args:
+            in_channels (int): Number of input channels.
+            stride (int): Strides.
+            expansion (int): Expansion ratio.
+            layers (int): Number of layers of CycleMLP_Block
+            output_channel (int): Number of output channels
+            batch_size (int): Batch size
+        """
+        super(Stage, self).__init__()
+        self.patch = OverlapPatchEmbed(in_chans=in_channels, stride=stride, patch_size=7, embed_dim=output_channel)
+        cycle_mlps = []
+        
+        for l in range(layers):
+            cycle_mlps.append(CycleMLP_Block(in_channels= output_channel, batch_size=batch_size))
+        self.CycleMLP_block=nn.Sequential(*cycle_mlps)
+        
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        """ Forward function for a stage
+
+        Args:
+            x (torch.Tensor): Input tensor of shape b,c_in,h,w
+
+        Returns:
+            torch.Tensor: Output tensor of shape  b,c_out,h/stride,w/stride
+        """
+        x = self.patch(x)
+        x = self.CycleMLP_block(x)
+        return x
+    
+class CycleMLP(nn.Module):
+    def __init__(self, 
+                 stride_list : list,
+                 channel_list : list,
+                 in_channels : list,
+                 expansion_list: list,
+                 layer_list : list,
+                 batch_size : int):
+        """ Initializes CycleMLP.
+
+        Args:
+            stride_list (list): List of stride values.
+            channel_list (list): List of channel values.
+            in_channels (list): List of input channel values
+            expansion_list (list): List of expansion ratio
+            layer_list (list): List of layers for CycleMLP block.
+            batch_size(int) : Batch size
+        """
+        super(CycleMLP, self).__init__()
+        stages = []
+        list_range = len(stride_list)
+        for s in range(list_range):
+            stages.append(Stage(in_channels=in_channels[s], stride=stride_list[s], expansion= expansion_list[s]
+                                ,layers= layer_list[s],output_channel=channel_list[s],batch_size=batch_size))
+        self.stages = nn.Sequential(*stages)
+        
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        """ Forward function for CycleMLP
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor
+        """
+        x = self.stages(x)
+        return x
+
 if __name__ == "__main__":
-    cfc = CycleMLP_Block(in_channels=3, batch_size=4)
+    # cfc = CycleMLP_Block(in_channels=3, batch_size=4)
+    cmlp = CycleMLP(stride_list=[4,2], channel_list=[96,192], expansion_list=[2,2], layer_list=[2,2],batch_size=4,in_channels=[3,96])
     test_input = torch.randn(size=(4, 3, 64, 64))
-    output = cfc(test_input)
-    # print(output)
+    parameters = sum(p.numel() for p in cmlp.parameters())
+    print(parameters)
+    # output = cfc(test_input)
+    # # print(output)
+    # print(output.shape)
+    # p = OverlapPatchEmbed(img_size=64,embed_dim=3, stride=4, patch_size=7)
+    # d = OverlapPatchEmbed(embed_dim=192, stride=2, patch_size=7, in_chans=128)
+    output = cmlp(test_input)
+    # output = d(output)
     print(output.shape)
