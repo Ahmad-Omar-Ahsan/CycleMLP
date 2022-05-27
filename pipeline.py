@@ -56,19 +56,21 @@ def training_pipeline(config):
 
     trainloader, valloader = get_train_valid_loader(
         data_dir=config["data_dir"],
-        batch_size=config["batch_size"],
-        augment=config["Augment"],
+        batch_size=config['hparams']["batch_size"],
+        augment=config['hparams']["augment"],
         num_workers=1,
         pin_memory=True,
     )
     testloader = get_test_loader(
         data_dir=config["data_dir"],
-        batch_size=config["batch_size"],
+        batch_size=config['hparams']["batch_size"],
         num_workers=1,
         pin_memory=True,
     )
 
     # model
+    config['hparams']['model']['batch_size'] = config['hparams']['batch_size']
+    config['hparams']['model']['device'] = config['exp']['device']
     model = get_model(config["hparams"]["model"])
     model = model.to(config["hparams"]["device"])
     print(f"Created model with {count_params(model)} parameters.")
