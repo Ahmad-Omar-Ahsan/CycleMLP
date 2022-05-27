@@ -58,14 +58,14 @@ def training_pipeline(config):
         data_dir=config["data_dir"],
         batch_size=config["hparams"]["batch_size"],
         augment=config["hparams"]["augment"],
-        num_workers=1,
-        pin_memory=True,
+        num_workers=config['exp']['n_workers'],
+        pin_memory=config['exp']['pin_memory'],
     )
     testloader = get_test_loader(
         data_dir=config["data_dir"],
         batch_size=config["hparams"]["batch_size"],
-        num_workers=1,
-        pin_memory=True,
+        num_workers=config['exp']['n_workers'],
+        pin_memory=config['exp']['pin_memory'],
     )
 
     # model
