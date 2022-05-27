@@ -1,11 +1,9 @@
-from matplotlib.pyplot import xkcd
 import torch
 import torch.nn as nn
-import torch.functional as F
 
 from typing import Tuple
 from math import floor
-from einops import rearrange
+from einops import rearrange, reduce
 
 
 def pair(t):
@@ -58,7 +56,13 @@ class MLP(nn.Module):
 
 class CycleFC(nn.Module):
     def __init__(
-        self, in_channels: int, out_channels: int, sh: int, sw: int, batch_size: int
+        self,
+        in_channels: int,
+        out_channels: int,
+        sh: int,
+        sw: int,
+        batch_size: int,
+        device: str,
     ):
         """Initialize CycleFC layer
 
@@ -67,14 +71,15 @@ class CycleFC(nn.Module):
             out_channels (int): Ouput_channels.
             sh (int): Stepsize along height.
             sw (int): Stepsize along width.
+            device (str) : Device
         """
         super(CycleFC, self).__init__()
         self.W_mlp = nn.parameter.Parameter(
             torch.randn(size=(batch_size, in_channels, out_channels)),
             requires_grad=True,
-        )
-        self.bias = nn.parameter.Parameter(torch.randn(size=(out_channels,)))
-
+        ).to(device)
+        self.bias = nn.parameter.Parameter(torch.randn(size=(out_channels,))).to(device)
+        self.device = device
         self.sh = sh
         self.sw = sw
         self.in_channels = in_channels
@@ -90,7 +95,7 @@ class CycleFC(nn.Module):
             torch.Tensor: Output Tensor. Shape : b, c_out, h, w
         """
         b, c_in, h, w = x.shape
-        output = torch.zeros(size=(b, self.out_channels, h, w))
+        output = torch.zeros(size=(b, self.out_channels, h, w)).to(self.device)
         for i in range(h):
             for j in range(w):
                 output[:, :, i, j] = self.calc_value(
@@ -147,13 +152,20 @@ class CycleFC(nn.Module):
 
 
 class Spatial_Proj(nn.Module):
-    def __init__(self, in_channels: int, batch_size: int, out_channels: int = 0):
+    def __init__(
+        self,
+        in_channels: int,
+        batch_size: int,
+        device: str,
+        out_channels: int = 0,
+    ):
         """Initializes Spatial Proj block.
 
         Args:
             in_channels (int): Number of input channels
             out_channels (int, optional): Number of output channels. Defaults to 0.
             batch_size (int): Batch size.
+            device (str): Device type
         """
         super(Spatial_Proj, self).__init__()
         out_channels = out_channels or in_channels
@@ -164,6 +176,7 @@ class Spatial_Proj(nn.Module):
             sh=1,
             sw=7,
             batch_size=batch_size,
+            device=device,
         )
         self.cycle2 = CycleFC(
             in_channels=in_channels,
@@ -171,6 +184,7 @@ class Spatial_Proj(nn.Module):
             sh=1,
             sw=1,
             batch_size=batch_size,
+            device=device,
         )
         self.cycle3 = CycleFC(
             in_channels=in_channels,
@@ -178,6 +192,7 @@ class Spatial_Proj(nn.Module):
             sh=7,
             sw=1,
             batch_size=batch_size,
+            device=device,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -244,17 +259,23 @@ class MLP_Block(nn.Module):
 
 
 class Cycle_Block(nn.Module):
-    def __init__(self, in_channels: int, batch_size: int, out_channels: int = 0):
+    def __init__(
+        self, in_channels: int, batch_size: int, device: str, out_channels: int = 0
+    ):
         """Initializes Cycle Block
 
         Args:
             in_channels (int): _description_
             batch_size (int): _description_
             out_channels (int, optional): _description_. Defaults to 0.
+            device (str) : Device type
         """
         super(Cycle_Block, self).__init__()
         self.spatial_proj = Spatial_Proj(
-            in_channels=in_channels, out_channels=out_channels, batch_size=batch_size
+            in_channels=in_channels,
+            out_channels=out_channels,
+            batch_size=batch_size,
+            device=device,
         )
         self.norm = nn.LayerNorm(in_channels)
 
@@ -277,17 +298,21 @@ class Cycle_Block(nn.Module):
 
 
 class CycleMLP_Block(nn.Module):
-    def __init__(self, in_channels: int, batch_size: int):
+    def __init__(self, in_channels: int, batch_size: int, device: str):
         """Initializes cycle mlp block
 
         Args:
             in_channels (int): Input channel.
             batch_size (int): Batch size.
+            device (str) : device
 
         """
         super(CycleMLP_Block, self).__init__()
         self.cycle_block = Cycle_Block(
-            in_channels=in_channels, batch_size=batch_size, out_channels=in_channels
+            in_channels=in_channels,
+            batch_size=batch_size,
+            out_channels=in_channels,
+            device=device,
         )
         self.mlp_block = MLP_Block(
             in_channels=in_channels,
@@ -359,13 +384,14 @@ class Stage(nn.Module):
         layers: int,
         output_channel: int,
         batch_size: int,
+        device: str,
     ):
         """Initialize a stage in CycleMLP
 
         Args:
             in_channels (int): Number of input channels.
             stride (int): Strides.
-
+            device (str): Device Type
             layers (int): Number of layers of CycleMLP_Block
             output_channel (int): Number of output channels
             batch_size (int): Batch size
@@ -378,7 +404,9 @@ class Stage(nn.Module):
 
         for l in range(layers):
             cycle_mlps.append(
-                CycleMLP_Block(in_channels=output_channel, batch_size=batch_size)
+                CycleMLP_Block(
+                    in_channels=output_channel, batch_size=batch_size, device=device
+                )
             )
         self.CycleMLP_block = nn.Sequential(*cycle_mlps)
 
@@ -404,6 +432,8 @@ class CycleMLP(nn.Module):
         in_channels: list,
         layer_list: list,
         batch_size: int,
+        device: str,
+        num_class: int,
     ):
         """Initializes CycleMLP.
 
@@ -411,9 +441,10 @@ class CycleMLP(nn.Module):
             stride_list (list): List of stride values.
             channel_list (list): List of channel values.
             in_channels (list): List of input channel values
-
+            device (str): Device type.
             layer_list (list): List of layers for CycleMLP block.
-            batch_size(int) : Batch size
+            batch_size (int) : Batch size
+            num_class (int) : Number of classes
         """
         super(CycleMLP, self).__init__()
         stages = []
@@ -426,9 +457,12 @@ class CycleMLP(nn.Module):
                     layers=layer_list[s],
                     output_channel=channel_list[s],
                     batch_size=batch_size,
+                    device=device,
                 )
             )
         self.stages = nn.Sequential(*stages)
+        self.to_logits = nn.Sequential(nn.Linear(channel_list[-1], num_class))
+        self.norm = nn.LayerNorm(channel_list[-1])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward function for CycleMLP
@@ -440,6 +474,9 @@ class CycleMLP(nn.Module):
             torch.Tensor: Output tensor
         """
         x = self.stages(x)
+        x = rearrange(x, "b c h w -> b (h w) c")
+        x = self.norm(x)
+        x = self.to_logits(x.mean(1))
         return x
 
 
@@ -451,8 +488,10 @@ if __name__ == "__main__":
         layer_list=[2, 2],
         batch_size=4,
         in_channels=[3, 96],
-    )
-    test_input = torch.randn(size=(4, 3, 64, 64))
+        device="cuda",
+        num_class=10,
+    ).to("cuda")
+    test_input = torch.randn(size=(4, 3, 64, 64)).to("cuda")
     parameters = sum(p.numel() for p in cmlp.parameters())
     print(parameters)
     # output = cfc(test_input)
