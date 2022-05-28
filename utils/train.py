@@ -110,6 +110,14 @@ def train(
 
         for batch_index, (data, targets) in enumerate(trainloader):
 
+            ####################
+            # optimization step
+            ####################
+
+            loss, corr = train_single_batch(
+                net, data, targets, optimizer, criterion, device
+            )
+
             if (
                 schedulers["warmup"] is not None
                 and epoch < config["hparams"]["scheduler"]["n_warmup"]
@@ -119,13 +127,6 @@ def train(
             elif schedulers["scheduler"] is not None:
                 schedulers["scheduler"].step()
 
-            ####################
-            # optimization step
-            ####################
-
-            loss, corr = train_single_batch(
-                net, data, targets, optimizer, criterion, device
-            )
             running_loss += loss
             correct += corr
 

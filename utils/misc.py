@@ -83,7 +83,6 @@ def get_model(model_config: dict) -> nn.Module:
         nn.Module: Model instance.
     """
     return CycleMLP(**model_config)
-    
 
 
 def save_model(
