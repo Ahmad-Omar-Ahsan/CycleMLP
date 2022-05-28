@@ -61,8 +61,6 @@ class CycleFC(nn.Module):
         out_channels: int,
         sh: int,
         sw: int,
-        batch_size: int,
-        device: str,
     ):
         """Initialize CycleFC layer
 
@@ -71,15 +69,15 @@ class CycleFC(nn.Module):
             out_channels (int): Ouput_channels.
             sh (int): Stepsize along height.
             sw (int): Stepsize along width.
-            device (str) : Device
+
         """
         super(CycleFC, self).__init__()
         self.W_mlp = nn.parameter.Parameter(
-            torch.randn(size=(batch_size, in_channels, out_channels)),
+            torch.randn(size=(in_channels, out_channels)),
             requires_grad=True,
-        ).to(device)
-        self.bias = nn.parameter.Parameter(torch.randn(size=(out_channels,))).to(device)
-        self.device = device
+        )
+        self.bias = nn.parameter.Parameter(torch.randn(size=(out_channels,)))
+
         self.sh = sh
         self.sw = sw
         self.in_channels = in_channels
@@ -95,13 +93,14 @@ class CycleFC(nn.Module):
             torch.Tensor: Output Tensor. Shape : b, c_out, h, w
         """
         b, c_in, h, w = x.shape
-        output = torch.zeros(size=(b, self.out_channels, h, w)).to(self.device)
-        for i in range(h):
-            for j in range(w):
-                output[:, :, i, j] = self.calc_value(
-                    x, w_mlp=self.W_mlp, c_in=c_in, i=i, j=j, h=h, w=w
-                )
-                output[:, :, i, j] += self.bias
+        output = torch.zeros(size=(b, self.out_channels, h, w)).to(x.device)
+        for k in range(b):
+            for i in range(h):
+                for j in range(w):
+                    output[k, :, i, j] = self.calc_value(
+                        x, w_mlp=self.W_mlp, c_in=c_in, i=i, j=j, h=h, w=w, k=k
+                    )
+                    output[k, :, i, j] += self.bias
         return output
 
     def get_offset(self, sh: int, sw: int, c: int) -> Tuple[int, int]:
@@ -128,6 +127,7 @@ class CycleFC(nn.Module):
         j: int,
         h: int,
         w: int,
+        k: int,
     ):
         """Calculate value for CycleFC
 
@@ -139,6 +139,7 @@ class CycleFC(nn.Module):
             j(int) : Current width index
             h(int) : Input height
             w(int) : Input weight
+            k(int) : Batch size
         Returns:
             torch.Tensor: Output tensor
         """
@@ -147,7 +148,7 @@ class CycleFC(nn.Module):
             delta_i, delta_j = self.get_offset(self.sh, self.sw, c)
             i_offset = (i + delta_i) % h
             j_offset = (j + delta_j) % w
-            sum += torch.matmul(x[:, c, i_offset, j_offset], w_mlp[:, c, :])
+            sum += x[k, c, i_offset, j_offset] * w_mlp[c, :]
         return sum
 
 
@@ -155,8 +156,6 @@ class Spatial_Proj(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        batch_size: int,
-        device: str,
         out_channels: int = 0,
     ):
         """Initializes Spatial Proj block.
@@ -164,8 +163,7 @@ class Spatial_Proj(nn.Module):
         Args:
             in_channels (int): Number of input channels
             out_channels (int, optional): Number of output channels. Defaults to 0.
-            batch_size (int): Batch size.
-            device (str): Device type
+
         """
         super(Spatial_Proj, self).__init__()
         out_channels = out_channels or in_channels
@@ -175,24 +173,18 @@ class Spatial_Proj(nn.Module):
             out_channels=out_channels,
             sh=1,
             sw=7,
-            batch_size=batch_size,
-            device=device,
         )
         self.cycle2 = CycleFC(
             in_channels=in_channels,
             out_channels=out_channels,
             sh=1,
             sw=1,
-            batch_size=batch_size,
-            device=device,
         )
         self.cycle3 = CycleFC(
             in_channels=in_channels,
             out_channels=out_channels,
             sh=7,
             sw=1,
-            batch_size=batch_size,
-            device=device,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -259,23 +251,19 @@ class MLP_Block(nn.Module):
 
 
 class Cycle_Block(nn.Module):
-    def __init__(
-        self, in_channels: int, batch_size: int, device: str, out_channels: int = 0
-    ):
+    def __init__(self, in_channels: int, out_channels: int = 0):
         """Initializes Cycle Block
 
         Args:
             in_channels (int): _description_
-            batch_size (int): _description_
+
             out_channels (int, optional): _description_. Defaults to 0.
-            device (str) : Device type
+
         """
         super(Cycle_Block, self).__init__()
         self.spatial_proj = Spatial_Proj(
             in_channels=in_channels,
             out_channels=out_channels,
-            batch_size=batch_size,
-            device=device,
         )
         self.norm = nn.LayerNorm(in_channels)
 
@@ -298,21 +286,21 @@ class Cycle_Block(nn.Module):
 
 
 class CycleMLP_Block(nn.Module):
-    def __init__(self, in_channels: int, batch_size: int, device: str):
+    def __init__(
+        self,
+        in_channels: int,
+    ):
         """Initializes cycle mlp block
 
         Args:
             in_channels (int): Input channel.
-            batch_size (int): Batch size.
-            device (str) : device
+
 
         """
         super(CycleMLP_Block, self).__init__()
         self.cycle_block = Cycle_Block(
             in_channels=in_channels,
-            batch_size=batch_size,
             out_channels=in_channels,
-            device=device,
         )
         self.mlp_block = MLP_Block(
             in_channels=in_channels,
@@ -383,18 +371,15 @@ class Stage(nn.Module):
         stride: int,
         layers: int,
         output_channel: int,
-        batch_size: int,
-        device: str,
     ):
         """Initialize a stage in CycleMLP
 
         Args:
             in_channels (int): Number of input channels.
             stride (int): Strides.
-            device (str): Device Type
             layers (int): Number of layers of CycleMLP_Block
             output_channel (int): Number of output channels
-            batch_size (int): Batch size
+
         """
         super(Stage, self).__init__()
         self.patch = OverlapPatchEmbed(
@@ -403,11 +388,7 @@ class Stage(nn.Module):
         cycle_mlps = []
 
         for l in range(layers):
-            cycle_mlps.append(
-                CycleMLP_Block(
-                    in_channels=output_channel, batch_size=batch_size, device=device
-                )
-            )
+            cycle_mlps.append(CycleMLP_Block(in_channels=output_channel))
         self.CycleMLP_block = nn.Sequential(*cycle_mlps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -431,8 +412,6 @@ class CycleMLP(nn.Module):
         channel_list: list,
         in_channels: list,
         layer_list: list,
-        batch_size: int,
-        device: str,
         num_class: int,
     ):
         """Initializes CycleMLP.
@@ -441,9 +420,7 @@ class CycleMLP(nn.Module):
             stride_list (list): List of stride values.
             channel_list (list): List of channel values.
             in_channels (list): List of input channel values
-            device (str): Device type.
             layer_list (list): List of layers for CycleMLP block.
-            batch_size (int) : Batch size
             num_class (int) : Number of classes
         """
         super(CycleMLP, self).__init__()
@@ -456,8 +433,6 @@ class CycleMLP(nn.Module):
                     stride=stride_list[s],
                     layers=layer_list[s],
                     output_channel=channel_list[s],
-                    batch_size=batch_size,
-                    device=device,
                 )
             )
         self.stages = nn.Sequential(*stages)
@@ -486,9 +461,7 @@ if __name__ == "__main__":
         stride_list=[4, 2],
         channel_list=[96, 192],
         layer_list=[2, 2],
-        batch_size=4,
-        in_channels=[3, 96],
-        device="cuda",
+        in_channels=[3, 64],
         num_class=10,
     ).to("cuda")
     test_input = torch.randn(size=(4, 3, 64, 64)).to("cuda")

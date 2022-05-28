@@ -45,32 +45,22 @@ def training_pipeline(config):
     #####################################
 
     # data
-    with open(config["train_list_file"], "r") as f:
-        train_list = f.read().rstrip().split("\n")
-
-    with open(config["val_list_file"], "r") as f:
-        val_list = f.read().rstrip().split("\n")
-
-    with open(config["test_list_file"], "r") as f:
-        test_list = f.read().rstrip().split("\n")
 
     trainloader, valloader = get_train_valid_loader(
         data_dir=config["data_dir"],
         batch_size=config["hparams"]["batch_size"],
         augment=config["hparams"]["augment"],
-        num_workers=config['exp']['n_workers'],
-        pin_memory=config['exp']['pin_memory'],
+        num_workers=config["exp"]["n_workers"],
+        pin_memory=config["exp"]["pin_memory"],
     )
     testloader = get_test_loader(
         data_dir=config["data_dir"],
         batch_size=config["hparams"]["batch_size"],
-        num_workers=config['exp']['n_workers'],
-        pin_memory=config['exp']['pin_memory'],
+        num_workers=config["exp"]["n_workers"],
+        pin_memory=config["exp"]["pin_memory"],
     )
 
     # model
-    config["hparams"]["model"]["batch_size"] = config["hparams"]["batch_size"]
-    config["hparams"]["model"]["device"] = config["exp"]["device"]
     model = get_model(config["hparams"]["model"])
     model = model.to(config["hparams"]["device"])
     print(f"Created model with {count_params(model)} parameters.")
