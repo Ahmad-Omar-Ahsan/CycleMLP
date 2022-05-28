@@ -82,11 +82,8 @@ def get_model(model_config: dict) -> nn.Module:
     Returns:
         nn.Module: Model instance.
     """
-
-    if model_config["type"] == "kw-mlp":
-        return CycleMLP(**model_config)
-    else:
-        raise ValueError(f"Unknown model type: {model_config['type']}")
+    return CycleMLP(**model_config)
+    
 
 
 def save_model(
